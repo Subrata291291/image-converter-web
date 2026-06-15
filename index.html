@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PixelForge | Premium Client-Side Image Converter</title>
+    <!-- SEO Meta Tags -->
+    <meta name="description" content="Convert, compress, and resize images locally in your browser. Supports PNG, JPG, WebP, BMP, and ICO. 100% private, fast, and secure.">
+    <meta name="keywords" content="image converter, client-side, webp to png, png to jpg, resize image, compress image, convert images locally, bulk image converter">
+    <meta name="author" content="PixelForge">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Background glow elements -->
+    <div class="glow-bg">
+        <div class="glow-circle glow-1"></div>
+        <div class="glow-circle glow-2"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <div class="logo-icon">
+                    <i data-lucide="layers"></i>
+                </div>
+                <h1>Pixel<span>Forge</span></h1>
+            </div>
+            <p class="subtitle">Secure, lightning-fast image conversion & resizing. Done entirely in your browser.</p>
+        </header>
+
+        <!-- Main Workspace -->
+        <main class="main-workspace">
+            <!-- Left Side: Controls & Settings -->
+            <aside class="control-panel card">
+                <div class="panel-section">
+                    <h2 class="section-title"><i data-lucide="sliders"></i> Conversion Settings</h2>
+                    
+                    <!-- Output Format Selector -->
+                    <div class="control-group">
+                        <label class="control-label">Target Format</label>
+                        <div class="format-grid">
+                            <button type="button" class="format-btn active" data-format="png">PNG</button>
+                            <button type="button" class="format-btn" data-format="jpeg">JPG</button>
+                            <button type="button" class="format-btn" data-format="webp">WEBP</button>
+                            <button type="button" class="format-btn" data-format="bmp">BMP</button>
+                            <button type="button" class="format-btn" data-format="ico">ICO</button>
+                        </div>
+                    </div>
+
+                    <!-- Quality Settings (Only for lossy formats) -->
+                    <div id="quality-settings-group" class="control-group hidden">
+                        <div class="slider-header">
+                            <label class="control-label">Quality (Compression)</label>
+                            <span id="quality-value">85%</span>
+                        </div>
+                        <input type="range" id="quality-slider" min="1" max="100" value="85" class="custom-slider">
+                        <span class="helper-text">Lower quality reduces file size but lowers image clarity.</span>
+                    </div>
+
+                    <!-- Background Fill Color (For transparency to non-transparency conversions) -->
+                    <div class="control-group">
+                        <label class="checkbox-container">
+                            <input type="checkbox" id="fill-bg-checkbox">
+                            <span class="checkmark"></span>
+                            Fill Transparency
+                        </label>
+                        <div id="bg-color-picker-group" class="color-picker-wrapper hidden">
+                            <span class="helper-text">Choose background color for transparent pixels:</span>
+                            <div class="color-input-row">
+                                <input type="color" id="bg-color-picker" value="#ffffff">
+                                <input type="text" id="bg-color-hex" value="#ffffff" placeholder="#ffffff" maxlength="7">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel-section border-top">
+                    <h2 class="section-title"><i data-lucide="maximize-2"></i> Resize Options</h2>
+                    
+                    <!-- Resize Mode Selector -->
+                    <div class="control-group">
+                        <label class="control-label">Resize Mode</label>
+                        <select id="resize-mode" class="custom-select">
+                            <option value="none" selected>Original Size (No resizing)</option>
+                            <option value="scale">Scale by Percentage</option>
+                            <option value="dimensions">Custom Dimensions (Px)</option>
+                        </select>
+                    </div>
+
+                    <!-- Percentage Resizing Details -->
+                    <div id="resize-scale-group" class="control-group hidden">
+                        <div class="slider-header">
+                            <label class="control-label">Scale Factor</label>
+                            <span id="scale-value">100%</span>
+                        </div>
+                        <input type="range" id="scale-slider" min="10" max="200" value="100" step="5" class="custom-slider">
+                    </div>
+
+                    <!-- Custom Width/Height Resizing Details -->
+                    <div id="resize-dimensions-group" class="control-group hidden">
+                        <div class="dimensions-input-row">
+                            <div class="dim-input-wrapper">
+                                <label for="resize-width" class="dim-label">Width (px)</label>
+                                <input type="number" id="resize-width" min="1" placeholder="Width">
+                            </div>
+                            <div class="aspect-ratio-toggle-wrapper">
+                                <button type="button" id="aspect-ratio-btn" class="ratio-btn active" title="Lock Aspect Ratio">
+                                    <i data-lucide="link"></i>
+                                </button>
+                            </div>
+                            <div class="dim-input-wrapper">
+                                <label for="resize-height" class="dim-label">Height (px)</label>
+                                <input type="number" id="resize-height" min="1" placeholder="Height">
+                            </div>
+                        </div>
+                        <span class="helper-text error-text hidden" id="dimensions-warning">Please enter valid dimensions.</span>
+                    </div>
+                </div>
+
+                <div class="privacy-note">
+                    <i data-lucide="shield-check"></i>
+                    <span>Your files never leave your computer. All processing runs 100% locally.</span>
+                </div>
+            </aside>
+
+            <!-- Right Side: Interactive Dropzone & File List -->
+            <section class="main-workspace-content">
+                <!-- Dropzone Area -->
+                <div class="dropzone" id="dropzone">
+                    <input type="file" id="file-input" multiple accept="image/*" class="file-input-hidden">
+                    <div class="dropzone-inner">
+                        <div class="dropzone-icon-container">
+                            <i data-lucide="cloud-upload" class="cloud-icon"></i>
+                        </div>
+                        <h3>Drag and drop your images here</h3>
+                        <p class="dropzone-sub">Supports PNG, JPG, WebP, GIF, SVG, BMP, ICO, and more</p>
+                        <button type="button" class="btn btn-secondary select-files-btn">
+                            <i data-lucide="folder-open"></i> Browse Files
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Files Manager / Grid (Hidden by default, shown when files are added) -->
+                <div class="files-manager card hidden" id="files-manager">
+                    <div class="files-manager-header">
+                        <div class="header-info">
+                            <span class="count-badge" id="files-count">0 Files Selected</span>
+                            <span class="total-size-badge" id="total-original-size">0 KB</span>
+                        </div>
+                        <div class="header-actions">
+                            <button type="button" class="btn btn-text-danger" id="clear-all-btn">
+                                <i data-lucide="trash-2"></i> Clear All
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Files List Container -->
+                    <div class="files-list" id="files-list">
+                        <!-- Dynamic file item cards are inserted here -->
+                    </div>
+
+                    <!-- Files Manager Footer Actions -->
+                    <div class="files-manager-footer">
+                        <div class="footer-stats hidden" id="conversion-stats">
+                            <span class="success-badge"><i data-lucide="check"></i> Converted: <span id="converted-count">0</span>/<span id="total-count">0</span></span>
+                            <span class="savings-text hidden" id="compression-savings">Total space saved: 0%</span>
+                        </div>
+                        <div class="action-buttons-group">
+                            <button type="button" class="btn btn-primary" id="convert-all-btn">
+                                <i data-lucide="play"></i> Convert All
+                            </button>
+                            <button type="button" class="btn btn-success hidden" id="download-zip-btn">
+                                <i data-lucide="download"></i> Download All (.ZIP)
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+        
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>&copy; 2026 PixelForge. All rights reserved. Created with security & design in mind.</p>
+        </footer>
+    </div>
+
+    <!-- CDN scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Core Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
