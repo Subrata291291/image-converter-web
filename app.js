@@ -6,6 +6,94 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Lucide Icons
     lucide.createIcons();
 
+    // ==================== RAW FORMAT HELPERS ====================
+    const RAW_EXTENSIONS = ['cr2', 'nef', 'arw', 'dng', 'raw', 'orf', 'rw2', 'pef', 'raf', 'srw'];
+
+    function getFileExtension(filename) {
+        return (filename || '').split('.').pop().toLowerCase();
+    }
+
+    function isRawFile(file) {
+        return RAW_EXTENSIONS.includes(getFileExtension(file.name));
+    }
+
+    /**
+     * Try to extract width/height from TIFF-based RAW files (DNG, CR2, NEF, ARW, etc.)
+     * by reading the first IFD's ImageWidth / ImageLength tags.
+     * Returns { width, height } or null.
+     */
+    async function extractRawDimensions(file) {
+        try {
+            // Read the first 64 KB — enough for TIFF headers + first IFD
+            const slice = file.slice(0, 65536);
+            const ab = await slice.arrayBuffer();
+            const view = new DataView(ab);
+
+            // Detect byte order (II = little-endian, MM = big-endian)
+            const bom = view.getUint16(0);
+            let le;
+            if (bom === 0x4949) le = true;       // 'II'
+            else if (bom === 0x4D4D) le = false; // 'MM'
+            else return null;
+
+            // Verify TIFF magic number (42)
+            const magic = view.getUint16(2, le);
+            if (magic !== 42) return null;
+
+            // Read offset to first IFD
+            let ifdOffset = view.getUint32(4, le);
+            if (ifdOffset >= ab.byteLength - 2) return null;
+
+            let width = 0, height = 0;
+
+            // Parse up to 3 IFDs to find full-size dimensions
+            for (let ifd = 0; ifd < 3 && ifdOffset && ifdOffset < ab.byteLength - 2; ifd++) {
+                const entryCount = view.getUint16(ifdOffset, le);
+                let ifdW = 0, ifdH = 0;
+
+                for (let i = 0; i < entryCount; i++) {
+                    const entryOff = ifdOffset + 2 + i * 12;
+                    if (entryOff + 12 > ab.byteLength) break;
+
+                    const tag = view.getUint16(entryOff, le);
+                    const type = view.getUint16(entryOff + 2, le);
+
+                    // Read value (handle SHORT=3 and LONG=4)
+                    let val = 0;
+                    if (type === 3) val = view.getUint16(entryOff + 8, le);
+                    else if (type === 4) val = view.getUint32(entryOff + 8, le);
+
+                    // 0x0100 = ImageWidth, 0x0101 = ImageLength
+                    if (tag === 0x0100) ifdW = val;
+                    if (tag === 0x0101) ifdH = val;
+
+                    // Also check SubIFD tags: 0xC61D (DefaultCropSizeW), 0xC61E (DefaultCropSizeH)
+                    // and EXIF PixelXDimension (0xA002) / PixelYDimension (0xA003)
+                    if (tag === 0xA002 || tag === 0xC61D) ifdW = ifdW || val;
+                    if (tag === 0xA003 || tag === 0xC61E) ifdH = ifdH || val;
+                }
+
+                // Keep the largest dimensions found across IFDs
+                if (ifdW > width) width = ifdW;
+                if (ifdH > height) height = ifdH;
+
+                // Next IFD offset
+                const nextOff = ifdOffset + 2 + entryCount * 12;
+                if (nextOff + 4 <= ab.byteLength) {
+                    ifdOffset = view.getUint32(nextOff, le);
+                } else {
+                    break;
+                }
+            }
+
+            if (width > 0 && height > 0) return { width, height };
+            return null;
+        } catch (e) {
+            console.warn('Could not extract RAW dimensions:', e);
+            return null;
+        }
+    }
+
     // Application State
     const state = {
         files: [], // Array of file objects: { id, file, name, size, type, previewUrl, status, convertedBlob, convertedSize, convertedType }
@@ -252,22 +340,26 @@ document.addEventListener('DOMContentLoaded', () => {
         let isFirstBatch = state.files.length === 0;
 
         Array.from(fileList).forEach(file => {
-            // Validate if it is actually an image
-            if (!file.type.startsWith('image/')) {
+            const raw = isRawFile(file);
+
+            // Validate if it is actually an image (allow RAW extensions through)
+            if (!raw && !file.type.startsWith('image/')) {
                 alert(`File "${file.name}" is not an image and will be skipped.`);
                 return;
             }
 
             // Create a unique id for tracking this file item
             const id = 'img_' + Math.random().toString(36).substr(2, 9);
+            const ext = getFileExtension(file.name);
             
             const fileItem = {
                 id: id,
                 file: file,
                 name: file.name,
                 size: file.size,
-                type: file.type.split('/')[1] || 'unknown',
-                previewUrl: URL.createObjectURL(file),
+                type: raw ? ext.toUpperCase() : (file.type.split('/')[1] || 'unknown'),
+                previewUrl: raw ? null : URL.createObjectURL(file),
+                isRaw: raw,
                 status: 'pending',
                 convertedBlob: null,
                 convertedSize: 0,
@@ -278,27 +370,52 @@ document.addEventListener('DOMContentLoaded', () => {
 
             state.files.push(fileItem);
 
-            // Fetch intrinsic width/height of the uploaded image
-            const img = new Image();
-            img.onload = () => {
-                fileItem.width = img.naturalWidth;
-                fileItem.height = img.naturalHeight;
-                
-                // If it's the absolute first valid image, set the reference aspect ratio
-                if (isFirstBatch && state.files[0].id === fileItem.id) {
-                    state.referenceAspectRatio = img.naturalWidth / img.naturalHeight;
-                    if (state.resizeMode === 'dimensions') {
-                        presetDimensionsFromFirstFile();
-                    }
-                }
-                
-                // Render the card now that dimensions are loaded
-                updateFileCardDimensions(fileItem);
-            };
-            img.src = fileItem.previewUrl;
-
             // Render initial loading card (dimensions will update asynchronously)
             renderFileCard(fileItem);
+
+            if (raw) {
+                // For RAW files: extract dimensions from TIFF/EXIF headers
+                extractRawDimensions(file).then(dims => {
+                    if (dims) {
+                        fileItem.width = dims.width;
+                        fileItem.height = dims.height;
+                    } else {
+                        // Fallback: mark as unknown
+                        fileItem.width = 0;
+                        fileItem.height = 0;
+                    }
+
+                    if (isFirstBatch && state.files[0].id === fileItem.id && fileItem.width > 0) {
+                        state.referenceAspectRatio = fileItem.width / fileItem.height;
+                        if (state.resizeMode === 'dimensions') {
+                            presetDimensionsFromFirstFile();
+                        }
+                    }
+
+                    updateFileCardDimensions(fileItem);
+                });
+            } else {
+                // Standard image: use native Image() to get dimensions
+                const img = new Image();
+                img.onload = () => {
+                    fileItem.width = img.naturalWidth;
+                    fileItem.height = img.naturalHeight;
+                    
+                    if (isFirstBatch && state.files[0].id === fileItem.id) {
+                        state.referenceAspectRatio = img.naturalWidth / img.naturalHeight;
+                        if (state.resizeMode === 'dimensions') {
+                            presetDimensionsFromFirstFile();
+                        }
+                    }
+                    
+                    updateFileCardDimensions(fileItem);
+                };
+                img.onerror = () => {
+                    // Even if preview fails, allow conversion attempt
+                    updateFileCardDimensions(fileItem);
+                };
+                img.src = fileItem.previewUrl;
+            }
         });
 
         updateUIState();
@@ -321,7 +438,11 @@ document.addEventListener('DOMContentLoaded', () => {
         if (card) {
             const dimEl = card.querySelector('.file-dimensions');
             if (dimEl) {
-                dimEl.textContent = `${fileItem.width} × ${fileItem.height} px`;
+                if (fileItem.width > 0 && fileItem.height > 0) {
+                    dimEl.textContent = `${fileItem.width} × ${fileItem.height} px`;
+                } else {
+                    dimEl.textContent = fileItem.isRaw ? 'RAW (dims on convert)' : 'Unknown';
+                }
             }
         }
     }
@@ -335,11 +456,14 @@ document.addEventListener('DOMContentLoaded', () => {
         card.className = 'file-item';
         card.id = fileItem.id;
         
+        const thumbSrc = fileItem.previewUrl || '';
+        const thumbImgStyle = fileItem.isRaw ? 'style="display:none"' : '';
+        const thumbFallbackStyle = fileItem.isRaw ? '' : 'class="file-thumbnail-fallback hidden"';
         card.innerHTML = `
             <div class="file-thumbnail">
-                <img src="${fileItem.previewUrl}" alt="${fileItem.name}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-                <div class="file-thumbnail-fallback hidden">
-                    <i data-lucide="image"></i>
+                <img src="${thumbSrc}" alt="${fileItem.name}" ${thumbImgStyle} onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div ${thumbFallbackStyle} style="${fileItem.isRaw ? 'display:flex' : ''}">
+                    <i data-lucide="${fileItem.isRaw ? 'camera' : 'image'}"></i>
                 </div>
             </div>
             <div class="file-info">
@@ -478,7 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     clearAllBtn.addEventListener('click', () => {
         state.files.forEach(fileItem => {
-            URL.revokeObjectURL(fileItem.previewUrl);
+            if (fileItem.previewUrl) URL.revokeObjectURL(fileItem.previewUrl);
             if (fileItem.convertedBlob) {
                 URL.revokeObjectURL(fileItem.convertedBlobUrl);
             }
@@ -544,113 +668,342 @@ document.addEventListener('DOMContentLoaded', () => {
 
     convertAllBtn.addEventListener('click', convertAllFiles);
 
+    // ==================== RAW DECODING ENGINE ====================
+
+    /**
+     * Try to extract JPEG preview data from TIFF IFD structure.
+     * DNG / CR2 / NEF store preview JPEGs referenced via SubIFD entries
+     * (StripOffsets + StripByteCounts or TileOffsets + TileByteCounts)
+     * or via the NewSubfileType tag + JPEGInterchangeFormat tag.
+     * Returns array of { offset, size } candidates or empty array.
+     */
+    function extractJpegOffsetsFromTIFF(ab) {
+        const results = [];
+        try {
+            const view = new DataView(ab);
+            const bom = view.getUint16(0);
+            let le;
+            if (bom === 0x4949) le = true;
+            else if (bom === 0x4D4D) le = false;
+            else return results;
+
+            const magic = view.getUint16(2, le);
+            if (magic !== 42) return results;
+
+            // Collect all IFD offsets (main IFDs + SubIFDs)
+            const ifdQueue = [];
+            let firstIfd = view.getUint32(4, le);
+            if (firstIfd > 0 && firstIfd < ab.byteLength) ifdQueue.push(firstIfd);
+
+            const visited = new Set();
+
+            while (ifdQueue.length > 0) {
+                const ifdOffset = ifdQueue.shift();
+                if (visited.has(ifdOffset) || ifdOffset < 8 || ifdOffset >= ab.byteLength - 2) continue;
+                visited.add(ifdOffset);
+
+                const entryCount = view.getUint16(ifdOffset, le);
+                if (entryCount > 500) continue; // sanity check
+
+                let jpegOffset = 0, jpegLength = 0;
+                let stripOffsets = 0, stripCounts = 0;
+
+                for (let i = 0; i < entryCount; i++) {
+                    const eOff = ifdOffset + 2 + i * 12;
+                    if (eOff + 12 > ab.byteLength) break;
+
+                    const tag = view.getUint16(eOff, le);
+                    const type = view.getUint16(eOff + 2, le);
+                    const count = view.getUint32(eOff + 4, le);
+
+                    // Read value (for LONG/SHORT with count=1)
+                    let val = 0;
+                    if (type === 3 && count === 1) val = view.getUint16(eOff + 8, le);
+                    else if (type === 4 && count === 1) val = view.getUint32(eOff + 8, le);
+                    else if (type === 3 && count > 1) val = view.getUint32(eOff + 8, le); // offset to values
+                    else if (type === 4 && count > 1) val = view.getUint32(eOff + 8, le); // offset to values
+
+                    // SubIFD pointer (tag 0x014A) — follow it
+                    if (tag === 0x014A && count >= 1) {
+                        let subOff = val;
+                        if (count === 1 && type === 4) {
+                            subOff = val;
+                        } else if (count > 1) {
+                            // val is offset to an array of LONG pointers
+                            for (let s = 0; s < Math.min(count, 4); s++) {
+                                const so = view.getUint32(val + s * 4, le);
+                                if (so > 0 && so < ab.byteLength) ifdQueue.push(so);
+                            }
+                            continue;
+                        }
+                        if (subOff > 0 && subOff < ab.byteLength) ifdQueue.push(subOff);
+                    }
+
+                    // EXIF IFD pointer (tag 0x8769)
+                    if (tag === 0x8769 && type === 4) {
+                        if (val > 0 && val < ab.byteLength) ifdQueue.push(val);
+                    }
+
+                    // JPEGInterchangeFormat (tag 0x0201) + JPEGInterchangeFormatLength (tag 0x0202)
+                    if (tag === 0x0201) jpegOffset = val;
+                    if (tag === 0x0202) jpegLength = val;
+
+                    // StripOffsets (tag 0x0111) / StripByteCounts (tag 0x0117)
+                    if (tag === 0x0111 && count === 1) stripOffsets = val;
+                    if (tag === 0x0117 && count === 1) stripCounts = val;
+                }
+
+                // Collect JPEG data found via IFD tags
+                if (jpegOffset > 0 && jpegLength > 1024 && jpegOffset + jpegLength <= ab.byteLength) {
+                    results.push({ offset: jpegOffset, size: jpegLength });
+                }
+                if (stripOffsets > 0 && stripCounts > 1024 && stripOffsets + stripCounts <= ab.byteLength) {
+                    // Check if strip data starts with JPEG SOI
+                    if (stripOffsets + 1 < ab.byteLength) {
+                        const b0 = view.getUint8(stripOffsets);
+                        const b1 = view.getUint8(stripOffsets + 1);
+                        if (b0 === 0xFF && b1 === 0xD8) {
+                            results.push({ offset: stripOffsets, size: stripCounts });
+                        }
+                    }
+                }
+
+                // Next IFD offset
+                const nextOff = ifdOffset + 2 + entryCount * 12;
+                if (nextOff + 4 <= ab.byteLength) {
+                    const next = view.getUint32(nextOff, le);
+                    if (next > 0 && next < ab.byteLength) ifdQueue.push(next);
+                }
+            }
+        } catch (e) {
+            console.warn('TIFF IFD extraction error:', e);
+        }
+        return results;
+    }
+
+    /**
+     * Decode a RAW file by extracting the embedded JPEG preview.
+     * Uses two strategies:
+     *   1. TIFF IFD parsing to find JPEG data referenced by tags (most reliable)
+     *   2. Byte-level JPEG SOI/EOI scanning with depth tracking (fallback)
+     * Returns an Image element ready for canvas drawing.
+     */
+    async function decodeRawToImage(file) {
+        const ab = await file.arrayBuffer();
+        const bytes = new Uint8Array(ab);
+        const candidates = []; // { offset, size }
+
+        // ── Strategy 1: TIFF IFD-based extraction (most reliable for DNG) ──
+        const tiffCandidates = extractJpegOffsetsFromTIFF(ab);
+        tiffCandidates.forEach(c => candidates.push(c));
+
+        // ── Strategy 2: Byte scan with SOI/EOI depth tracking ──
+        // This handles nested JPEGs correctly (e.g. EXIF thumbnail inside preview JPEG)
+        let i = 0;
+        while (i < bytes.length - 1) {
+            if (bytes[i] === 0xFF && bytes[i + 1] === 0xD8) {
+                // Found a SOI — now track depth to find the matching outer EOI
+                const soiIdx = i;
+                let depth = 1;
+                let j = i + 2;
+
+                while (j < bytes.length - 1) {
+                    if (bytes[j] === 0xFF) {
+                        if (bytes[j + 1] === 0xD8) {
+                            // Nested SOI (e.g. EXIF thumbnail)
+                            depth++;
+                            j += 2;
+                            continue;
+                        }
+                        if (bytes[j + 1] === 0xD9) {
+                            // EOI marker
+                            depth--;
+                            if (depth === 0) {
+                                // This is the matching outer EOI
+                                const eoiEnd = j + 2;
+                                const jpegSize = eoiEnd - soiIdx;
+                                if (jpegSize > 4096) { // skip tiny blobs
+                                    candidates.push({ offset: soiIdx, size: jpegSize });
+                                }
+                                i = eoiEnd;
+                                break;
+                            }
+                            j += 2;
+                            continue;
+                        }
+                    }
+                    j++;
+                }
+
+                // If we never found a matching EOI, skip this SOI
+                if (depth !== 0) i += 2;
+            } else {
+                i++;
+            }
+        }
+
+        // Deduplicate candidates and sort by size (largest first = best quality preview)
+        const unique = [];
+        const seen = new Set();
+        candidates.forEach(c => {
+            const key = `${c.offset}:${c.size}`;
+            if (!seen.has(key)) {
+                seen.add(key);
+                unique.push(c);
+            }
+        });
+        unique.sort((a, b) => b.size - a.size);
+
+        console.log(`[PixelForge] Found ${unique.length} JPEG candidate(s) in RAW file:`,
+            unique.map(c => `offset=${c.offset}, size=${(c.size/1024).toFixed(1)}KB`));
+
+        // Try each candidate (largest first) until one loads successfully
+        for (const candidate of unique) {
+            try {
+                const jpegBytes = bytes.slice(candidate.offset, candidate.offset + candidate.size);
+
+                // Verify JPEG starts with SOI marker
+                if (jpegBytes[0] !== 0xFF || jpegBytes[1] !== 0xD8) continue;
+
+                const jpegBlob = new Blob([jpegBytes], { type: 'image/jpeg' });
+                const url = URL.createObjectURL(jpegBlob);
+
+                const img = await new Promise((resolve, reject) => {
+                    const image = new Image();
+                    image.onload = () => {
+                        URL.revokeObjectURL(url);
+                        resolve(image);
+                    };
+                    image.onerror = () => {
+                        URL.revokeObjectURL(url);
+                        reject(new Error('JPEG blob failed to load'));
+                    };
+                    image.src = url;
+                });
+
+                console.log(`[PixelForge] Successfully decoded JPEG preview: ${img.naturalWidth}×${img.naturalHeight} from offset ${candidate.offset}`);
+                return img;
+            } catch (e) {
+                console.warn(`[PixelForge] Candidate at offset ${candidate.offset} failed, trying next...`, e);
+                continue;
+            }
+        }
+
+        throw new Error('No usable JPEG preview found in RAW file. This RAW format may not be supported in the browser.');
+    }
+
     // Core Canvas Processing routine
     function processImageConversion(fileItem) {
-        return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = "anonymous"; // prevent tainted canvas for CORS URLs
-            
-            img.onload = () => {
-                try {
-                    // Create working canvas
-                    const canvas = document.createElement('canvas');
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) {
-                        reject(new Error("Unable to create canvas 2D context"));
+        return new Promise(async (resolve, reject) => {
+            try {
+                let img;
+
+                if (fileItem.isRaw) {
+                    // Decode RAW file first
+                    img = await decodeRawToImage(fileItem.file);
+                } else {
+                    // Standard image: load via object URL
+                    img = await new Promise((res, rej) => {
+                        const image = new Image();
+                        image.crossOrigin = "anonymous";
+                        image.onload = () => res(image);
+                        image.onerror = () => rej(new Error("Could not parse source image file"));
+                        image.src = fileItem.previewUrl;
+                    });
+                }
+
+                // Create working canvas
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                if (!ctx) {
+                    reject(new Error("Unable to create canvas 2D context"));
+                    return;
+                }
+
+                // 1. Calculate Target Dimensions
+                let targetWidth = img.naturalWidth;
+                let targetHeight = img.naturalHeight;
+
+                // Update fileItem dimensions if they were unknown
+                if (fileItem.width === 0) fileItem.width = targetWidth;
+                if (fileItem.height === 0) fileItem.height = targetHeight;
+
+                if (state.resizeMode === 'scale') {
+                    const factor = state.scaleFactor / 100;
+                    targetWidth = Math.round(img.naturalWidth * factor);
+                    targetHeight = Math.round(img.naturalHeight * factor);
+                } else if (state.resizeMode === 'dimensions') {
+                    const wInput = state.customWidth;
+                    const hInput = state.customHeight;
+
+                    if (!wInput || !hInput) {
+                        reject(new Error("Invalid custom dimensions specified"));
                         return;
                     }
 
-                    // 1. Calculate Target Dimensions
-                    let targetWidth = img.naturalWidth;
-                    let targetHeight = img.naturalHeight;
+                    if (state.lockAspectRatio) {
+                        const imgRatio = img.naturalWidth / img.naturalHeight;
+                        const targetRatio = wInput / hInput;
 
-                    if (state.resizeMode === 'scale') {
-                        const factor = state.scaleFactor / 100;
-                        targetWidth = Math.round(img.naturalWidth * factor);
-                        targetHeight = Math.round(img.naturalHeight * factor);
-                    } else if (state.resizeMode === 'dimensions') {
-                        const wInput = state.customWidth;
-                        const hInput = state.customHeight;
-
-                        if (!wInput || !hInput) {
-                            reject(new Error("Invalid custom dimensions specified"));
-                            return;
-                        }
-
-                        if (state.lockAspectRatio) {
-                            // Scale dimensions to fit bounding box while preserving aspect ratio
-                            const imgRatio = img.naturalWidth / img.naturalHeight;
-                            const targetRatio = wInput / hInput;
-
-                            if (imgRatio > targetRatio) {
-                                targetWidth = wInput;
-                                targetHeight = Math.round(wInput / imgRatio);
-                            } else {
-                                targetWidth = Math.round(hInput * imgRatio);
-                                targetHeight = hInput;
-                            }
-                        } else {
+                        if (imgRatio > targetRatio) {
                             targetWidth = wInput;
+                            targetHeight = Math.round(wInput / imgRatio);
+                        } else {
+                            targetWidth = Math.round(hInput * imgRatio);
                             targetHeight = hInput;
                         }
-                    }
-
-                    // Prevent zero or negative dimensions
-                    targetWidth = Math.max(1, targetWidth);
-                    targetHeight = Math.max(1, targetHeight);
-
-                    // Set canvas bounds
-                    canvas.width = targetWidth;
-                    canvas.height = targetHeight;
-
-                    // 2. Transparency handling / Background Filling
-                    if (state.fillBg) {
-                        ctx.fillStyle = state.bgColor;
-                        ctx.fillRect(0, 0, targetWidth, targetHeight);
-                    }
-
-                    // 3. Draw image onto canvas
-                    ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
-
-                    // 4. Extract Blob based on Target Format
-                    const format = state.targetFormat;
-                    const mimeType = getMimeType(format);
-
-                    if (format === 'bmp') {
-                        // Use local custom BMP encoder
-                        const bmpBlob = canvasToBmpBlob(canvas);
-                        resolve({ blob: bmpBlob, width: targetWidth, height: targetHeight });
-                    } else if (format === 'ico') {
-                        // Use local custom PNG-encapsulated ICO encoder
-                        canvasToIcoBlob(canvas).then(icoBlob => {
-                            if (icoBlob) {
-                                resolve({ blob: icoBlob, width: targetWidth, height: targetHeight });
-                            } else {
-                                reject(new Error("Failed to encode ICO file"));
-                            }
-                        }).catch(reject);
                     } else {
-                        // Use Native canvas export for WebP, JPEG, PNG
-                        const qualityVal = state.quality / 100;
-                        canvas.toBlob((blob) => {
-                            if (blob) {
-                                resolve({ blob: blob, width: targetWidth, height: targetHeight });
-                            } else {
-                                reject(new Error(`Failed to convert image to ${format.toUpperCase()}`));
-                            }
-                        }, mimeType, qualityVal);
+                        targetWidth = wInput;
+                        targetHeight = hInput;
                     }
-
-                } catch (err) {
-                    reject(err);
                 }
-            };
 
-            img.onerror = () => {
-                reject(new Error("Could not parse source image file"));
-            };
+                // Prevent zero or negative dimensions
+                targetWidth = Math.max(1, targetWidth);
+                targetHeight = Math.max(1, targetHeight);
 
-            img.src = fileItem.previewUrl;
+                // Set canvas bounds
+                canvas.width = targetWidth;
+                canvas.height = targetHeight;
+
+                // 2. Transparency handling / Background Filling
+                if (state.fillBg) {
+                    ctx.fillStyle = state.bgColor;
+                    ctx.fillRect(0, 0, targetWidth, targetHeight);
+                }
+
+                // 3. Draw image onto canvas
+                ctx.drawImage(img, 0, 0, targetWidth, targetHeight);
+
+                // 4. Extract Blob based on Target Format
+                const format = state.targetFormat;
+                const mimeType = getMimeType(format);
+
+                if (format === 'bmp') {
+                    const bmpBlob = canvasToBmpBlob(canvas);
+                    resolve({ blob: bmpBlob, width: targetWidth, height: targetHeight });
+                } else if (format === 'ico') {
+                    canvasToIcoBlob(canvas).then(icoBlob => {
+                        if (icoBlob) {
+                            resolve({ blob: icoBlob, width: targetWidth, height: targetHeight });
+                        } else {
+                            reject(new Error("Failed to encode ICO file"));
+                        }
+                    }).catch(reject);
+                } else {
+                    const qualityVal = state.quality / 100;
+                    canvas.toBlob((blob) => {
+                        if (blob) {
+                            resolve({ blob: blob, width: targetWidth, height: targetHeight });
+                        } else {
+                            reject(new Error(`Failed to convert image to ${format.toUpperCase()}`));
+                        }
+                    }, mimeType, qualityVal);
+                }
+
+            } catch (err) {
+                reject(err);
+            }
         });
     }
 

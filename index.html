@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PixelForge | Premium Client-Side Image Converter</title>
     <!-- SEO Meta Tags -->
-    <meta name="description" content="Convert, compress, and resize images locally in your browser. Supports PNG, JPG, WebP, BMP, and ICO. 100% private, fast, and secure.">
-    <meta name="keywords" content="image converter, client-side, webp to png, png to jpg, resize image, compress image, convert images locally, bulk image converter">
+    <meta name="description" content="Convert, compress, and resize images locally in your browser. Supports PNG, JPG, WebP, BMP, ICO and RAW formats (CR2, NEF, ARW, DNG, RAW). 100% private, fast, and secure.">
+    <meta name="keywords" content="image converter, client-side, webp to png, png to jpg, resize image, compress image, convert images locally, bulk image converter, RAW conversion">
     <meta name="author" content="PixelForge">
     
     <!-- Google Fonts -->
@@ -14,10 +14,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     
-    <!-- Stylesheet -->
+    <!-- Stylesheet (you can replace with your own) -->
     <link rel="stylesheet" href="style.css">
 </head>
-<body>
+<body class="dark">
     <!-- Background glow elements -->
     <div class="glow-bg">
         <div class="glow-circle glow-1"></div>
@@ -33,7 +33,7 @@
                 </div>
                 <h1>Pixel<span>Forge</span></h1>
             </div>
-            <p class="subtitle">Secure, lightning-fast image conversion & resizing. Done entirely in your browser.</p>
+            <p class="subtitle">Secure, lightning-fast image conversion &amp; resizing. Done entirely in your browser.</p>
         </header>
 
         <!-- Main Workspace -->
@@ -65,7 +65,7 @@
                         <span class="helper-text">Lower quality reduces file size but lowers image clarity.</span>
                     </div>
 
-                    <!-- Background Fill Color (For transparency to non-transparency conversions) -->
+                    <!-- Background Fill Color (For transparency to non‑transparency conversions) -->
                     <div class="control-group">
                         <label class="checkbox-container">
                             <input type="checkbox" id="fill-bg-checkbox">
@@ -135,13 +135,13 @@
             <section class="main-workspace-content">
                 <!-- Dropzone Area -->
                 <div class="dropzone" id="dropzone">
-                    <input type="file" id="file-input" multiple accept="image/*" class="file-input-hidden">
+                    <input type="file" id="file-input" multiple accept="image/*,.cr2,.nef,.arw,.dng,.raw" class="file-input-hidden">
                     <div class="dropzone-inner">
                         <div class="dropzone-icon-container">
                             <i data-lucide="cloud-upload" class="cloud-icon"></i>
                         </div>
                         <h3>Drag and drop your images here</h3>
-                        <p class="dropzone-sub">Supports PNG, JPG, WebP, GIF, SVG, BMP, ICO, and more</p>
+                        <p class="dropzone-sub">Supports PNG, JPG, WebP, GIF, SVG, BMP, ICO, and RAW formats (CR2, NEF, ARW, DNG, RAW)</p>
                         <button type="button" class="btn btn-secondary select-files-btn">
                             <i data-lucide="folder-open"></i> Browse Files
                         </button>
@@ -188,14 +188,15 @@
         
         <!-- Footer -->
         <footer class="app-footer">
-            <p>&copy; 2026 PixelForge. All rights reserved. Created with security & design in mind.</p>
+            <p>&copy; 2026 PixelForge. All rights reserved. Created with security &amp; design in mind.</p>
         </footer>
     </div>
 
     <!-- CDN scripts -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
     <script src="https://unpkg.com/lucide@latest"></script>
-    <!-- Core Application Script -->
+    <!-- Core Application Script (the integration script you added earlier) -->
     <script src="app.js"></script>
+    <script type="module" src="pixelforge.js"></script>
 </body>
 </html>
